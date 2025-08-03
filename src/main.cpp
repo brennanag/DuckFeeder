@@ -5,6 +5,10 @@
    - char[] buffer for minutesOfDay()
 */
 
+
+
+
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>               // <── NEW
@@ -12,6 +16,8 @@
 #include <WiFiUdp.h>
 #include <time.h>
 #include <Preferences.h>
+// #include <Update.h>
+#include <ArduinoOTA.h> 
 
 // ---------------- WiFi / mDNS ----------------
 const char* SSID     = "Otterhousehold";
@@ -346,6 +352,48 @@ void handleDebug() {
   server.send(200, "text/html", html);
 }
 
+ 
+//   // OTA Update Handlers
+// void setupOTA() {
+//   // Configure the hostname
+//   String hostname = "duckfeederdev";
+//   ArduinoOTA.setHostname(hostname.c_str());
+
+//   // Set OTA password (optional)
+//   // ArduinoOTA.setPassword("your_OTA_password");
+
+//   ArduinoOTA
+//     .onStart([]() {
+//       String type;
+//       if (ArduinoOTA.getCommand() == U_FLASH) {
+//         type = "sketch";
+//       } else { // U_SPIFFS
+//         type = "filesystem";
+//       }
+//       Serial.println("Start updating " + type);
+//       motorOff(); // Safety precaution
+//     })
+//     .onEnd([]() {
+//       Serial.println("\nEnd");
+//     })
+//     .onProgress([](unsigned int progress, unsigned int total) {
+//       Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+//     })
+//     .onError([](ota_error_t error) {
+//       Serial.printf("Error[%u]: ", error);
+//       if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+//       else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+//       else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+//       else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+//       else if (error == OTA_END_ERROR) Serial.println("End Failed");
+//     });
+
+//   ArduinoOTA.begin();
+//   Serial.println("OTA Ready");
+//   Serial.print("IP address: ");
+//   Serial.println(WiFi.localIP());
+// }
+
 
 // ---------------- Setup ----------------
 void setup() {
@@ -368,7 +416,7 @@ void setup() {
 
   if(WiFi.status() == WL_CONNECTED) {
     if (MDNS.begin("duckfeederdev")) { // Name your device
-      Serial.println("mDNS started: http://duckfeeder.local");
+      Serial.println("mDNS started: http://duckfeederdev.local");
     }
   } else {
     Serial.println("WiFi not connected");
@@ -407,20 +455,31 @@ if (millis() - lastPrint > 1000) {  // <-- add
   lastPrint = millis();             // <-- add
   Serial.println(hhmm(localNow())); // optional, keeps serial tidy
 }
-
+//routes
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/manual", HTTP_POST, handleManual);
   server.on("/debug", handleDebug); //debug page
+  server.on("/ota", HTTP_GET, []() {
+  String html = "<form method='POST' action='/update' enctype='multipart/form-data'>";
+  html += "<input type='file' name='update'><input type='submit' value='Update'>";
+  html += "</form>";
+  server.send(200, "text/html", html);
+  server.on("/getTime", handleGetTime);
+});
+
   server.begin();
   // MDNS.addService("http", "tcp", 80);
 
-  // In setup():
-  server.on("/getTime", handleGetTime); 
+
+   // Initialize OTA
+  ArduinoOTA.begin();
 }
 
 // ---------------- Loop ----------------
 void loop() {
+  ArduinoOTA.handle();
+
   static uint32_t lastNTP = 0;
   static uint8_t amFired[50] = {0};
   static uint8_t pmFired[50] = {0};
@@ -485,5 +544,8 @@ void loop() {
       }
     }
   }
-
+  // OTA updates
+  
+  ArduinoOTA.handle();
+  // ElegantOTA.loop();
 }
