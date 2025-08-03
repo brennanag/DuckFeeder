@@ -17,7 +17,7 @@
 const char* SSID     = "Otterhousehold";
 const char* PASSWORD = "turquoise33";
 
-IPAddress local_IP(192, 168, 68, 211);
+IPAddress local_IP(192, 168, 68, 210);
 IPAddress gateway(192, 168, 68, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress dns(192, 168, 68, 1);
@@ -367,7 +367,7 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) ESP.restart();
 
   if(WiFi.status() == WL_CONNECTED) {
-    if (MDNS.begin("duckfeederdev")) { // Name your device
+    if (MDNS.begin("duckfeeder")) { // Name your device
       Serial.println("mDNS started: http://duckfeeder.local");
     }
   } else {
