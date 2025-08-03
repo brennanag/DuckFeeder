@@ -17,7 +17,7 @@
 const char* SSID     = "Otterhousehold";
 const char* PASSWORD = "turquoise33";
 
-IPAddress local_IP(192, 168, 68, 210);
+IPAddress local_IP(192, 168, 68, 211);
 IPAddress gateway(192, 168, 68, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress dns(192, 168, 68, 1);
@@ -30,14 +30,16 @@ const uint8_t MOTOR_PIN2 = 14;
 Preferences prefs;
 WebServer server(80);
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", -8*3600, 60000);
+//Time
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000); // 0 offset for UTC
 
 struct Settings {
-  String  A = "07:00";
-  String  P = "18:00";
-  uint16_t Z = 30;
-  uint8_t  Y = 4;
-  uint8_t  X = 5;
+  String  A = "07:00";   // finishedFeedTime AM
+  String  P = "18:00";   // finishedFeedTime PM
+  uint16_t Z = 30;       // totalDuration (s)
+  uint8_t  Y = 4;        // feedCount
+  uint8_t  X = 5;        // shortFeed (s)
+  uint8_t  gap = 1;      // gapMinutes
 } cfg;
 
 // ---------- fast minute-of-day ----------
@@ -55,10 +57,13 @@ bool isDST(tm &t) {
 
 time_t localNow() {
   time_t utc = timeClient.getEpochTime();
-  tm *t = gmtime(&utc);
-  int offset = -8 * 3600;
-  if (isDST(*t)) offset += 3600;
-  return utc + offset;
+  tm *t = gmtime(&utc);  // Convert to tm struct
+  
+  // PST is UTC-8, DST is UTC-7
+  int offset = -8 * 3600;  
+  if (isDST(*t)) offset += 3600;  // Add 1h for daylight saving
+  
+  return utc + offset;  // Apply corrected offset
 }
 
 String hhmm(time_t t) {
@@ -73,9 +78,10 @@ void loadSettings() {
   prefs.begin("feeder", false);
   cfg.A = prefs.getString("A", "07:00");
   cfg.P = prefs.getString("P", "18:00");
-  cfg.Z = prefs.getUShort("Z", 30);
-  cfg.Y = prefs.getUChar("Y", 4);
-  cfg.X = prefs.getUChar("X", 5);
+  cfg.Z = prefs.getUShort("Z", 100);
+  cfg.Y = prefs.getUChar("Y", 10);
+  cfg.X = prefs.getUChar("X", 2);
+  cfg.gap = prefs.getUChar("gap", 1);  
   prefs.end();
 }
 
@@ -86,6 +92,7 @@ void saveSettings() {
   prefs.putUShort("Z", cfg.Z);
   prefs.putUChar("Y", cfg.Y);
   prefs.putUChar("X", cfg.X);
+  prefs.putUChar("gap", cfg.gap);       
   prefs.end();
 }
 
@@ -98,21 +105,49 @@ const char MAIN_page[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
-<title>Duck Feeder</title></head><body>
+<title>Duck Feeder</title></head>
+
+<script>
+function updateTime() {
+  fetch('/getTime')
+    .then(response => response.json())
+    .then(data => {
+      document.getElementById('liveTime').textContent = data.time;
+      document.getElementById('amPm').textContent = data.amPm;
+    });
+  setTimeout(updateTime, 1000); // Update every second
+}
+updateTime(); // Initial call
+</script>
+
+<body>
 <section class="section">
  <div class="container">
   <h1 class="title">Duck Feeder</h1>
+
+    <p class="subtitle is-6">ESP32 time: <strong id="liveTime"></strong> <span id="amPm"></span></p>
+
   <form method="post" action="/save">
-   <div class="field"><label class="label">Morning start (HH:MM)</label>
+   
+  <div class="field"><label class="label">AM finish time (HH:MM)</label>
     <div class="control"><input class="input" type="time" name="A" value="%A%"></div></div>
-   <div class="field"><label class="label">Evening start (HH:MM)</label>
+   
+    <div class="field"><label class="label">PM finish time (HH:MM)</label>
     <div class="control"><input class="input" type="time" name="P" value="%P%"></div></div>
-   <div class="field"><label class="label">Total seconds per session (1-600)</label>
+   
+    <div class="field"><label class="label">Total seconds per session (1-600)</label>
     <div class="control"><input class="input" type="number" name="Z" min="1" max="600" value="%Z%"></div></div>
-   <div class="field"><label class="label">Number of feedings per session (2-50)</label>
+   
+    <div class="field"><label class="label">Number of feedings per session (2-50)</label>
     <div class="control"><input class="input" type="number" name="Y" min="2" max="50" value="%Y%"></div></div>
-   <div class="field"><label class="label">Small-feed duration (1-30 s)</label>
-    <div class="control"><input class="input" type="number" name="X" min="1" max="30" value="%X%"></div></div>
+   
+    <div class="field"><label class="label">Small-feed duration (1-30 s)</label>
+   <div class="control"><input class="input" type="number" name="X" min="1" max="30" value="%X%"></div></div>
+
+
+   <div class="field"><label class="label">Gap between feedings (1-60 min)</label>
+      <div class="control"><input class="input" type="number" name="gap" min="1" max="60" value="%GAP%"></div></div>
+ 
    <button class="button is-primary">Save</button>
   </form>
 
@@ -141,6 +176,73 @@ String buildScheduleText() {
   return s;
 }
 
+// ---------- NEW HELPERS ----------
+String hhmmNow() {
+  time_t t = localNow();
+  tm *l = localtime(&t);
+
+  char buf[10];               // big enough for "hh:mm AM"
+  bool pm = (l->tm_hour >= 12);
+  int  hr12 = (l->tm_hour % 12 == 0) ? 12 : l->tm_hour % 12;
+  sprintf(buf, "%d:%02d", hr12, l->tm_min);
+  String suffix = pm ? "PM" : "AM";
+  return String(buf) + " " + suffix;
+}
+
+String buildScheduleTextWithTimes() {
+  String s = "Session ends at AM=" + cfg.A + "  PM=" + cfg.P + "\n";
+  s += "Total Z=" + String(cfg.Z) + "s, Y=" + String(cfg.Y) +
+       ", gap=" + String(cfg.gap) + " min\n";
+
+  // Validate settings
+  int32_t totalShortFeeds = (cfg.Y - 1) * cfg.X;
+  if (totalShortFeeds >= cfg.Z) {
+    s += "ERROR: Invalid settings - (Y-1)*X (" + String(totalShortFeeds) + 
+         ") >= Z (" + String(cfg.Z) + ")\n";
+    s += "Final feed would be negative!\n";
+    return s;
+  }
+
+  uint16_t longFeed = cfg.Z - totalShortFeeds;
+
+  for (uint8_t sess = 0; sess < 2; sess++) {
+    String finStr = sess ? cfg.P : cfg.A;
+    int finMin = minutesOfDay(finStr.c_str());
+
+    for (uint8_t i = 1; i <= cfg.Y; i++) {
+      int targetMin = finMin - (cfg.Y - i) * cfg.gap;
+      if (targetMin < 0) targetMin += 1440;
+
+      uint16_t dur = (i == cfg.Y) ? longFeed : cfg.X;
+
+      char line[40];
+      sprintf(line, "  %s #%d  %02d:%02d  (%d s)\n",
+              sess ? "PM" : "AM",
+              i,
+              targetMin / 60,
+              targetMin % 60,
+              dur);
+      s += line;
+    }
+  }
+  return s;
+}
+
+void handleGetTime() {
+  time_t t = localNow();
+  tm *l = localtime(&t);
+  
+  bool pm = (l->tm_hour >= 12);
+  int hr12 = (l->tm_hour % 12 == 0) ? 12 : l->tm_hour % 12;
+  
+  char timeStr[10];
+  sprintf(timeStr, "%d:%02d", hr12, l->tm_min);
+  
+  String json = "{\"time\":\"" + String(timeStr) + "\",\"amPm\":\"" + (pm ? "PM" : "AM") + "\"}";
+  server.send(200, "application/json", json);
+}
+
+
 void handleRoot() {
   String html = MAIN_page;
   html.replace("%A%", cfg.A);
@@ -148,7 +250,20 @@ void handleRoot() {
   html.replace("%Z%", String(cfg.Z));
   html.replace("%Y%", String(cfg.Y));
   html.replace("%X%", String(cfg.X));
-  html.replace("%SCHED%", buildScheduleText());
+  html.replace("%GAP%", String(cfg.gap));
+
+  time_t t = localNow();
+  tm *l = localtime(&t);
+
+  bool pm = (l->tm_hour >= 12);
+  int  hr12 = (l->tm_hour % 12 == 0) ? 12 : l->tm_hour % 12;
+
+  char hhmmBuf[6];                // "hh:mm"
+  sprintf(hhmmBuf, "%02d:%02d", hr12, l->tm_min);
+  html.replace("%NOW%",  String(hhmmBuf));
+  html.replace("%AMPM%", pm ? "PM" : "AM");
+
+  html.replace("%SCHED%", buildScheduleTextWithTimes());
   server.send(200, "text/html", html);
 }
 
@@ -158,9 +273,17 @@ void handleSave() {
   cfg.Z = server.arg("Z").toInt();
   cfg.Y = server.arg("Y").toInt();
   cfg.X = server.arg("X").toInt();
-  cfg.Z = constrain(cfg.Z, 1, 600);
+  cfg.gap = server.arg("gap").toInt();
+  
+  // Apply constraints
+  cfg.gap = constrain(cfg.gap, 1, 60);
   cfg.Y = constrain(cfg.Y, 2, 50);
   cfg.X = constrain(cfg.X, 1, 30);
+  
+  // Ensure Z is large enough
+  uint16_t minZ = (cfg.Y - 1) * cfg.X + 1; // At least 1s for final feed
+  cfg.Z = constrain(cfg.Z, minZ, 600);
+  
   saveSettings();
   server.sendHeader("Location", "/");
   server.send(302);
@@ -196,7 +319,7 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) ESP.restart();
 
   if(WiFi.status() == WL_CONNECTED) {
-    if (MDNS.begin("duckfeeder")) { // Name your device
+    if (MDNS.begin("duckfeederdev")) { // Name your device
       Serial.println("mDNS started: http://duckfeeder.local");
     }
   } else {
@@ -208,11 +331,35 @@ void setup() {
   timeClient.begin();
   timeClient.update();
 
+  // Add this debug output:
+  Serial.println("\nTime verification:");
+  Serial.print("UTC epoch:    "); Serial.println(timeClient.getEpochTime());
+  
+  time_t utc = timeClient.getEpochTime();
+  time_t local = localNow();
+  
+  Serial.print("UTC time:     "); Serial.println(ctime(&utc));
+  Serial.print("Local time:   "); Serial.println(ctime(&local));
+  
+  tm *t = gmtime(&utc);
+  Serial.print("Is DST:       "); Serial.println(isDST(*t) ? "Yes" : "No");
+  Serial.print("Timezone offset: "); Serial.println(isDST(*t) ? "-7" : "-8");
+
+  //update time once a second
+  static uint32_t lastPrint;          // <-- add
+if (millis() - lastPrint > 1000) {  // <-- add
+  lastPrint = millis();             // <-- add
+  Serial.println(hhmm(localNow())); // optional, keeps serial tidy
+}
+
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/manual", HTTP_POST, handleManual);
   server.begin();
   // MDNS.addService("http", "tcp", 80);
+
+  // In setup():
+  server.on("/getTime", handleGetTime); 
 }
 
 // ---------------- Loop ----------------
@@ -242,35 +389,42 @@ void loop() {
   strcpy(nowBuf, hhmm(nowSec).c_str());
   int nowMin = minutesOfDay(nowBuf);
 
-  // AM session
-  for (uint8_t i = 1; i <= cfg.Y; i++) {
-    int base = minutesOfDay(cfg.A.c_str());
-    int spacing = 1440 / (cfg.Y + 1);
-    int target = base + i * spacing;
-    if (target >= 1440) target -= 1440;
+  // ---------- AM session ----------
+  {
+    int finMin = minutesOfDay(cfg.A.c_str());
+    uint16_t longFeed = cfg.Z - (cfg.Y - 1) * cfg.X;
 
-    if (nowMin == target && !amFired[i - 1]) {
-      amFired[i - 1] = 1;
-      uint16_t dur = (i < cfg.Y) ? cfg.X : (cfg.Z - (cfg.Y - 1) * cfg.X);
-      motorOn();
-      delay(dur * 1000);
-      motorOff();
+    for (uint8_t i = 1; i <= cfg.Y; i++) {
+      int targetMin = finMin - (cfg.Y - i) * cfg.gap;
+      if (targetMin < 0) targetMin += 1440;
+
+      if (nowMin == targetMin && !amFired[i - 1]) {
+        amFired[i - 1] = 1;
+        uint16_t dur = (i == cfg.Y) ? max(1, cfg.Z - (cfg.Y - 1) * cfg.X) : cfg.X;
+        motorOn();
+        delay(dur * 1000);
+        motorOff();
+      }
     }
   }
 
-  // PM session
-  for (uint8_t i = 1; i <= cfg.Y; i++) {
-    int base = minutesOfDay(cfg.P.c_str());
-    int spacing = 1440 / (cfg.Y + 1);
-    int target = base + i * spacing;
-    if (target >= 1440) target -= 1440;
+  // ---------- PM session ----------
+  {
+    int finMin = minutesOfDay(cfg.P.c_str());
+    uint16_t longFeed = cfg.Z - (cfg.Y - 1) * cfg.X;
 
-    if (nowMin == target && !pmFired[i - 1]) {
-      pmFired[i - 1] = 1;
-      uint16_t dur = (i < cfg.Y) ? cfg.X : (cfg.Z - (cfg.Y - 1) * cfg.X);
-      motorOn();
-      delay(dur * 1000);
-      motorOff();
+    for (uint8_t i = 1; i <= cfg.Y; i++) {
+      int targetMin = finMin - (cfg.Y - i) * cfg.gap;
+      if (targetMin < 0) targetMin += 1440;
+
+      if (nowMin == targetMin && !pmFired[i - 1]) {
+        pmFired[i - 1] = 1;
+        uint16_t dur = (i == cfg.Y) ? max(1, cfg.Z - (cfg.Y - 1) * cfg.X) : cfg.X;
+        motorOn();
+        delay(dur * 1000);
+        motorOff();
+      }
     }
   }
+
 }
