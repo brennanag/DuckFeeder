@@ -33,6 +33,16 @@ WiFiUDP ntpUDP;
 //Time
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000); // 0 offset for UTC
 
+//debug info
+#define MAX_HISTORY 20  // Store last 20 feedings
+struct FeedEvent {
+  time_t timestamp;
+  uint16_t duration;
+};
+FeedEvent feedHistory[MAX_HISTORY];
+uint8_t historyIndex = 0;
+void recordFeeding(uint16_t dur);
+
 struct Settings {
   String  A = "07:00";   // finishedFeedTime AM
   String  P = "18:00";   // finishedFeedTime PM
@@ -126,7 +136,9 @@ updateTime(); // Initial call
   <h1 class="title">Duck Feeder</h1>
 
     <p class="subtitle is-6">ESP32 time: <strong id="liveTime"></strong> <span id="amPm"></span></p>
-
+<div style="margin-top:20px;">
+  <a href="/debug" class="button is-info is-small">View Feeding History</a>
+</div>
   <form method="post" action="/save">
    
   <div class="field"><label class="label">AM finish time (HH:MM)</label>
@@ -295,9 +307,45 @@ void handleManual() {
   motorOn();
   delay(dur * 1000);
   motorOff();
+  recordFeeding(dur);
   server.sendHeader("Location", "/");
   server.send(302);
 }
+
+void recordFeeding(uint16_t dur) {
+  feedHistory[historyIndex].timestamp = localNow();
+  feedHistory[historyIndex].duration = dur;
+  
+  prefs.begin("feedHistory", false);
+  prefs.putULong(("ts"+String(historyIndex)).c_str(), feedHistory[historyIndex].timestamp);
+  prefs.putUShort(("d"+String(historyIndex)).c_str(), dur);
+  prefs.end();
+  
+  historyIndex = (historyIndex + 1) % MAX_HISTORY; // Circular buffer
+}
+
+void handleDebug() {
+  String html = "<!DOCTYPE html><html><head><title>Feeding Debug</title>";
+  html += "<style>table {width:100%;} th {text-align:left;}</style></head><body>";
+  html += "<h1>Last Feedings</h1><table><tr><th>Date</th><th>Time</th><th>Duration</th></tr>";
+
+  for(int i=0; i<MAX_HISTORY; i++) {
+    int idx = (historyIndex + MAX_HISTORY - 1 - i) % MAX_HISTORY;
+    if(feedHistory[idx].timestamp == 0) continue;
+    
+    tm *t = localtime(&feedHistory[idx].timestamp);
+    char buf[30];
+    strftime(buf, sizeof(buf), "%Y-%m-%d", t);
+    html += "<tr><td>" + String(buf) + "</td>";
+    strftime(buf, sizeof(buf), "%H:%M:%S", t);
+    html += "<td>" + String(buf) + "</td>";
+    html += "<td>" + String(feedHistory[idx].duration) + "s</td></tr>";
+  }
+
+  html += "</table></body></html>";
+  server.send(200, "text/html", html);
+}
+
 
 // ---------------- Setup ----------------
 void setup() {
@@ -328,6 +376,14 @@ void setup() {
 
   loadSettings();
 
+  //debug
+    prefs.begin("feedHistory", false);
+  for(int i=0; i<MAX_HISTORY; i++) {
+    feedHistory[i].timestamp = prefs.getULong(("ts"+String(i)).c_str(), 0);
+    feedHistory[i].duration = prefs.getUShort(("d"+String(i)).c_str(), 0);
+  }
+  prefs.end();
+
   timeClient.begin();
   timeClient.update();
 
@@ -355,6 +411,7 @@ if (millis() - lastPrint > 1000) {  // <-- add
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/manual", HTTP_POST, handleManual);
+  server.on("/debug", handleDebug); //debug page
   server.begin();
   // MDNS.addService("http", "tcp", 80);
 
@@ -404,6 +461,7 @@ void loop() {
         motorOn();
         delay(dur * 1000);
         motorOff();
+        recordFeeding(dur);
       }
     }
   }
@@ -423,6 +481,7 @@ void loop() {
         motorOn();
         delay(dur * 1000);
         motorOff();
+        recordFeeding(dur);
       }
     }
   }
