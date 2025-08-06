@@ -16,14 +16,14 @@
 #include <WiFiUdp.h>
 #include <time.h>
 #include <Preferences.h>
-// #include <Update.h>
+#include <Update.h>
 #include <ArduinoOTA.h> 
 
 // ---------------- WiFi / mDNS ----------------
 const char* SSID     = "Otterhousehold";
 const char* PASSWORD = "turquoise33";
 
-IPAddress local_IP(192, 168, 68, 211);
+IPAddress local_IP(192, 168, 68, 210);
 IPAddress gateway(192, 168, 68, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress dns(192, 168, 68, 1);
@@ -38,6 +38,9 @@ WebServer server(80);
 WiFiUDP ntpUDP;
 //Time
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000); // 0 offset for UTC
+
+// ---------------- Device Configuration ----------------
+const char* DEVICE_NAME = "duckfeederdev";  // Change this to "duckfeeder" or "duckfeederdev"
 
 //debug info
 #define MAX_HISTORY 20  // Store last 20 feedings
@@ -352,48 +355,26 @@ void handleDebug() {
   server.send(200, "text/html", html);
 }
 
- 
-//   // OTA Update Handlers
-// void setupOTA() {
-//   // Configure the hostname
-//   String hostname = "duckfeederdev";
-//   ArduinoOTA.setHostname(hostname.c_str());
+void setupOTA() {
+  ArduinoOTA.setHostname("DEVICE_NAME");
+  // ArduinoOTA.setPassword("your_password"); // Uncomment to enable auth
 
-//   // Set OTA password (optional)
-//   // ArduinoOTA.setPassword("your_OTA_password");
-
-//   ArduinoOTA
-//     .onStart([]() {
-//       String type;
-//       if (ArduinoOTA.getCommand() == U_FLASH) {
-//         type = "sketch";
-//       } else { // U_SPIFFS
-//         type = "filesystem";
-//       }
-//       Serial.println("Start updating " + type);
-//       motorOff(); // Safety precaution
-//     })
-//     .onEnd([]() {
-//       Serial.println("\nEnd");
-//     })
-//     .onProgress([](unsigned int progress, unsigned int total) {
-//       Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-//     })
-//     .onError([](ota_error_t error) {
-//       Serial.printf("Error[%u]: ", error);
-//       if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-//       else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-//       else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-//       else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-//       else if (error == OTA_END_ERROR) Serial.println("End Failed");
-//     });
-
-//   ArduinoOTA.begin();
-//   Serial.println("OTA Ready");
-//   Serial.print("IP address: ");
-//   Serial.println(WiFi.localIP());
-// }
-
+  ArduinoOTA
+    .onStart([]() {
+      Serial.println("OTA Update Start");
+      motorOff(); // Safety measure
+    })
+    .onEnd([]() { Serial.println("\nOTA Update Complete"); })
+    .onError([](ota_error_t error) {
+      Serial.printf("OTA Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+  ArduinoOTA.begin();
+}
 
 // ---------------- Setup ----------------
 void setup() {
@@ -401,7 +382,9 @@ void setup() {
 
   delay(2000);          // give the PC time to open the port
   Serial.println("\n\n=== DuckFeeder start ===");
+  //OTA
 
+  
   pinMode(MOTOR_PIN1, OUTPUT);
   pinMode(MOTOR_PIN2, OUTPUT);
   motorOff();
@@ -415,8 +398,8 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) ESP.restart();
 
   if(WiFi.status() == WL_CONNECTED) {
-    if (MDNS.begin("duckfeederdev")) { // Name your device
-      Serial.println("mDNS started: http://duckfeederdev.local");
+    if (MDNS.begin(DEVICE_NAME)) { // Name your device
+      Serial.printf("mDNS started: http://%s.local\n", DEVICE_NAME);
     }
   } else {
     Serial.println("WiFi not connected");
@@ -466,6 +449,75 @@ if (millis() - lastPrint > 1000) {  // <-- add
   html += "</form>";
   server.send(200, "text/html", html);
   server.on("/getTime", handleGetTime);
+  // HTML form for updates (Bulma-styled)
+// // OTA Update Page Handler (HTML form)
+// server.on("/update", HTTP_GET, []() {
+//   String html = R"rawliteral(
+//   <!DOCTYPE html>
+//   <html>
+//   <head>
+//     <meta name="viewport" content="width=device-width, initial-scale=1">
+//     <title>ESP32 Firmware Update</title>
+//     <style>
+//       body { font-family: Arial; margin: 40px auto; max-width: 600px; line-height: 1.6; }
+//       .box { border: 1px solid #ddd; padding: 20px; border-radius: 5px; }
+//       .btn { background: #3498db; color: white; padding: 10px 15px; border: none; border-radius: 4px; }
+//     </style>
+//   </head>
+//   <body>
+//     <div class="box">
+//       <h1>Firmware Update</h1>
+//       <form method="POST" action="/update" enctype="multipart/form-data">
+//         <p><input type="file" name="update" accept=".bin"></p>
+//         <p><input class="btn" type="submit" value="Upload"></p>
+//       </form>
+//     </div>
+//   </body>
+//   </html>
+//   )rawliteral";
+//   server.send(200, "text/html", html);
+// });
+
+// // OTA Upload Processing Handler
+// server.on("/update", HTTP_POST, 
+//   // POST response handler (after upload completes)
+//   []() {
+//     server.sendHeader("Connection", "close");
+//     server.send(200, "text/plain", Update.hasError() ? "OTA FAILED" : "OTA Success! Rebooting...");
+//     delay(1000);
+//     ESP.restart();
+//   },
+//   // File upload handler (during upload)
+//   []() {
+//     HTTPUpload& upload = server.upload();
+    
+//     if (upload.status == UPLOAD_FILE_START) {
+//       Serial.printf("OTA Update Start: %s\n", upload.filename.c_str());
+//       motorOff(); // Safety precaution
+      
+//       // Start update
+//       if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+//         Update.printError(Serial);
+//       }
+      
+//     } else if (upload.status == UPLOAD_FILE_WRITE) {
+//       // Writing received data
+//       if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+//         Update.printError(Serial);
+//       }
+//       Serial.printf("Progress: %d%%\r", (upload.totalSize + upload.currentSize) * 100 / upload.totalSize);
+      
+//     } else if (upload.status == UPLOAD_FILE_END) {
+//       // Finalize update
+//       if (Update.end(true)) {
+//         Serial.printf("\nUpdate Success: %u bytes\n", upload.totalSize);
+//       } else {
+//         Update.printError(Serial);
+//       }
+//     }
+//   }
+// );
+
 });
 
   server.begin();
@@ -544,8 +596,8 @@ void loop() {
       }
     }
   }
-  // OTA updates
   
-  ArduinoOTA.handle();
-  // ElegantOTA.loop();
 }
+
+//todo turn off morning or evening feedings
+//todo over the air updates
