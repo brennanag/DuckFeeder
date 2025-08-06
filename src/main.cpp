@@ -61,6 +61,7 @@ struct Settings {
   uint8_t  gap = 1;      // gapMinutes
 } cfg;
 
+
 // ---------- fast minute-of-day ----------
 int minutesOfDay(const char *h) {
   return (h[0] - '0') * 600 + (h[1] - '0') * 60 + (h[3] - '0') * 10 + (h[4] - '0');
@@ -400,7 +401,6 @@ void setup() {
   if(WiFi.status() == WL_CONNECTED) {
     if (MDNS.begin(DEVICE_NAME)) { // Name your device
       Serial.printf("mDNS started: http://%s.local\n", DEVICE_NAME);
-    }
   } else {
     Serial.println("WiFi not connected");
   }
